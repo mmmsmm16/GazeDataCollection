@@ -1,0 +1,22 @@
+version: '3'
+services:
+  app:
+    build: .
+    volumes:
+      - .:/app:delegated
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - npm-cache:/home/appuser/.npm
+    environment:
+      - DISPLAY=${DISPLAY}
+      - LIBGL_ALWAYS_INDIRECT=1
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    network_mode: host
+    user: appuser
+    privileged: true
+    stdin_open: true
+    tty: true
+
+volumes:
+  npm-cache:
+    driver: local

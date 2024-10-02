@@ -1,0 +1,30 @@
+{
+  "name": "image-selection-eye-tracking-system",
+  "version": "1.0.0",
+  "description": "An application for image selection with eye tracking capabilities",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "webpack --config webpack.config.js --mode production && electron .",
+    "build": "webpack --config webpack.config.js --mode production"
+  },
+  "author": "Your Name",
+  "license": "",
+  "dependencies": {
+    "electron": "^13.1.7",
+    "react": "^17.0.2",
+    "react-dom": "^17.0.2",
+    "@mui/material": "^5.14.10",
+    "@emotion/react": "^11.11.1",
+    "@emotion/styled": "^11.11.0"
+  },
+  "devDependencies": {
+    "electron": "^13.1.7",
+    "webpack": "^5.47.1",
+    "webpack-cli": "^4.7.2",
+    "@babel/core": "^7.14.8",
+    "@babel/preset-env": "^7.14.8",
+    "@babel/preset-react": "^7.14.5",
+    "babel-loader": "^8.2.2"
+  }
+}
