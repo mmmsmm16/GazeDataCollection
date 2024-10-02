@@ -37,7 +37,14 @@ function App() {
   const [showCountdown, setShowCountdown] = useState(false);
   const [isDataCollectionActive, setIsDataCollectionActive] = useState(false);
   const [showImages, setShowImages] = useState(false);
-  const { gazeData, isConnected, error, startTracking, stopTracking } = useEyeTracker('ws://host.docker.internal:8765');
+  const { 
+    gazeData, 
+    isConnected, 
+    error, 
+    startTracking, 
+    stopTracking, 
+    getGazeDataBuffer 
+  } = useEyeTracker('ws://host.docker.internal:8765');
 
   useEffect(() => {
     ipcRenderer.invoke('load-image-sets')
@@ -89,18 +96,25 @@ function App() {
     const sessionResult = await createSessionFolder();
     if (sessionResult) {
       const randomImages = getRandomImages(imageSets[selectedSet], 4);
+      stopTracking(); // カウントダウン中はトラッキングを停止
+      setGazeDataBuffer([]);
+      setUserActionLog([]);
+      
       setCurrentImages(randomImages);
       setCurrentSetIndex(0);
       setIsInitialScreen(false);
       setIsRegionSelectionStep(false);
-      setShowCountdown(true);
-      setShowImages(false);
-      setGazeDataBuffer([]);
       setStepCount(0);
-      setUserActionLog([]);
+      
       logUserAction('SESSION_START', { sessionId: sessionResult.sessionId, userType, totalSteps });
       console.log(`Started session with ID: ${sessionResult.sessionId}`);
       console.log('Current images:', randomImages);
+      
+      // 状態更新が完了した後にカウントダウンを開始
+      setTimeout(() => {
+        setShowCountdown(true);
+        setShowImages(false);
+      }, 0);
     }
   };
 
@@ -108,7 +122,7 @@ function App() {
     console.log('Countdown completed');
     setShowCountdown(false);
     setShowImages(true);
-    startTracking();
+    startTracking(); // カウントダウン完了後にトラッキングを開始
     setIsDataCollectionActive(true);
   };
 
@@ -161,20 +175,26 @@ function App() {
       isEndSession: isEndSession
     };
 
-    const csvData = gazeDataBuffer.map(data => 
-      `${data.timestamp},${data.left_x},${data.left_y},${data.right_x},${data.right_y}`
+    const gazeDataBufferContent = getGazeDataBuffer();
+    const csvData = gazeDataBufferContent.map(data => 
+      `${data.timestamp},${isNaN(data.left_x) ? 'N' : data.left_x},${isNaN(data.left_y) ? 'N' : data.left_y},${isNaN(data.right_x) ? 'N' : data.right_x},${isNaN(data.right_y) ? 'N' : data.right_y}`
     ).join('\n');
-
+  
     const csvHeader = 'timestamp,left_x,left_y,right_x,right_y\n';
-
+  
     try {
       const jsonFileName = `${currentStep}_${currentSubStep}.json`;
       const csvFileName = `${currentStep}_${currentSubStep}.csv`;
-
-      await ipcRenderer.invoke('save-data', saveDirectory, jsonFileName, JSON.stringify(jsonData, null, 2));
+  
+      await ipcRenderer.invoke('save-data', saveDirectory, jsonFileName, JSON.stringify({
+        ...jsonData,
+        gazeData: gazeDataBuffer
+      }, (key, value) => 
+        typeof value === 'number' && isNaN(value) ? 'N' : value
+      , 2));
       await ipcRenderer.invoke('save-data', saveDirectory, csvFileName, csvHeader + csvData);
       await ipcRenderer.invoke('update-session-info', userType, sessionId, currentStep);
-
+  
       console.log('Data saved successfully');
       return true;
     } catch (error) {

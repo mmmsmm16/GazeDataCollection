@@ -1,87 +1,94 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 const useEyeTracker = (url) => {
   const [gazeData, setGazeData] = useState(null);
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState(null);
   const [isTracking, setIsTracking] = useState(false);
+  const gazeDataBuffer = useRef([]);
+  const lastUpdateTime = useRef(0);
+  const socketRef = useRef(null);
 
   const connectToEyeTracker = useCallback(() => {
     console.log(`Attempting to connect to eye tracker at ${url}`);
-    let socket;
-
+    
     try {
-      socket = new WebSocket(url);
+      socketRef.current = new WebSocket(url);
     } catch (err) {
       console.error('Error creating WebSocket:', err);
       setError(`Failed to create WebSocket: ${err.message}`);
-      return () => {};
+      return;
     }
 
-    socket.onopen = () => {
+    socketRef.current.onopen = () => {
       console.log('WebSocket connection opened successfully');
       setIsConnected(true);
       setError(null);
     };
 
-    socket.onmessage = (event) => {
-      console.log('Received message:', event.data);
+    socketRef.current.onmessage = (event) => {
+      if (!isTracking) return;
+      
       try {
-        const data = JSON.parse(event.data, (key, value) => {
+        const sanitizedData = event.data.replace(/"N"/g, '"NaN"');
+        const data = JSON.parse(sanitizedData, (key, value) => {
           if (value === "NaN") return NaN;
+          if (value === "Infinity") return Infinity;
+          if (value === "-Infinity") return -Infinity;
           return value;
         });
-        console.log('Parsed gaze data:', data);
-        setGazeData(data);
+        gazeDataBuffer.current.push(data);
+
+        // 60Hzでメインスレッドを更新 (約16.67ms)
+        if (Date.now() - lastUpdateTime.current > 16) {
+          setGazeData(data);
+          lastUpdateTime.current = Date.now();
+        }
       } catch (err) {
-        console.error('Error parsing gaze data:', err);
-        setError(`Error parsing gaze data: ${err.message}`);
+        console.error('Error parsing gaze data:', err, 'Raw data:', event.data);
       }
     };
 
-    socket.onclose = (event) => {
+    socketRef.current.onclose = (event) => {
       console.log('WebSocket connection closed', event.reason);
       setIsConnected(false);
       setError(`WebSocket connection closed: ${event.reason}`);
       setTimeout(connectToEyeTracker, 5000);
     };
 
-    socket.onerror = (error) => {
+    socketRef.current.onerror = (error) => {
       console.error('WebSocket error:', error);
       setError(`WebSocket error: ${error.message || JSON.stringify(error)}`);
     };
-
-    return () => {
-      console.log('Cleaning up WebSocket connection');
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.close();
-      }
-    };
-  }, [url]);
+  }, [url, isTracking]);
 
   const startTracking = useCallback(() => {
     console.log('Starting eye tracking');
     setIsTracking(true);
-    // ここに実際のトラッキング開始ロジックを追加
+    gazeDataBuffer.current = [];
   }, []);
 
   const stopTracking = useCallback(() => {
     console.log('Stopping eye tracking');
     setIsTracking(false);
-    // ここに実際のトラッキング停止ロジックを追加
+  }, []);
+
+  const getGazeDataBuffer = useCallback(() => {
+    const buffer = gazeDataBuffer.current;
+    gazeDataBuffer.current = [];
+    return buffer;
   }, []);
 
   useEffect(() => {
-    console.log('Setting up WebSocket connection');
-    const cleanup = connectToEyeTracker();
+    connectToEyeTracker();
     return () => {
-      console.log('Cleaning up effect');
-      cleanup();
+      if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
+        socketRef.current.close();
+      }
     };
   }, [connectToEyeTracker]);
 
-
-  return { gazeData, isConnected, error, startTracking, stopTracking };
+  return { gazeData, isConnected, error, startTracking, stopTracking, getGazeDataBuffer };
 };
 
 export default useEyeTracker;
