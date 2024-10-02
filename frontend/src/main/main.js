@@ -1,38 +1,95 @@
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, session, screen } = require('electron');
 const path = require('path');
 const fs = require('fs').promises;
 
 let mainWindow;
 
-// グローバルエラーハンドリング
-process.on('uncaughtException', (error) => {
-  console.error('Uncaught Exception:', error);
-  dialog.showErrorBox('Uncaught Exception', error.message);
-});
+// 画像セットを読み込む関数
+async function loadImageSets(baseDir) {
+  const imageSets = {};
+  const entries = await fs.readdir(baseDir, { withFileTypes: true });
+  
+  for (const entry of entries) {
+    if (entry.isDirectory()) {
+      const setPath = path.join(baseDir, entry.name);
+      const images = await fs.readdir(setPath);
+      imageSets[entry.name] = images
+        .filter(file => ['.jpg', '.jpeg', '.png', '.gif'].includes(path.extname(file).toLowerCase()))
+        .map(file => ({
+          id: path.basename(file, path.extname(file)),
+          src: `file://${path.join(setPath, file)}`,
+          alt: path.basename(file, path.extname(file))
+        }));
+    }
+  }
+  
+  return imageSets;
+}
 
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-  dialog.showErrorBox('Unhandled Rejection', reason.message || 'Unknown reason');
-});
+function selectDisplay() {
+  const displays = screen.getAllDisplays();
+  const options = displays.map((display, index) => ({
+    label: `Display ${index + 1} (${display.size.width}x${display.size.height})`,
+    value: index
+  }));
+
+  const selection = dialog.showMessageBoxSync({
+    type: 'question',
+    buttons: options.map(option => option.label),
+    message: 'Select a display to use:',
+    cancelId: 0 // デフォルトでプライマリディスプレイを使用
+  });
+
+  return displays[selection];
+}
 
 function createWindow() {
   console.log('Creating main window');
+
+  const selectedDisplay = selectDisplay();
+  const { width, height } = selectedDisplay.workAreaSize;
+
   mainWindow = new BrowserWindow({
-    width: 1500,
-    height: 1300,
+    x: selectedDisplay.bounds.x,
+    y: selectedDisplay.bounds.y,
+    width: width,
+    height: height,
+    fullscreen: true,
     webPreferences: {
       nodeIntegration: true,
-      contextIsolation: false
+      contextIsolation: false,
+      preload: path.join(__dirname, 'preload.js')
     }
+  });
+
+  // CSPの設定を更新してWebSocket接続を許可
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [
+          "default-src 'self';" +
+          "script-src 'self' 'unsafe-inline' 'unsafe-eval';" +
+          "style-src 'self' 'unsafe-inline';" +
+          "img-src 'self' data:;" +
+          "connect-src 'self' ws: wss:;"  // WebSocket接続を許可
+        ]
+      }
+    });
   });
 
   const indexPath = path.join(__dirname, '../../public/index.html');
   console.log('Loading index.html from:', indexPath);
   mainWindow.loadFile(indexPath);
+  
   mainWindow.webContents.openDevTools();
 
   mainWindow.webContents.on('did-finish-load', () => {
     console.log('Main window loaded successfully');
+    // ページ内のコンソールログをメインプロセスにも出力
+    mainWindow.webContents.on('console-message', (event, level, message, line, sourceId) => {
+      console.log('Renderer Log:', message);
+    });
   });
 
   mainWindow.on('closed', () => {
@@ -41,8 +98,8 @@ function createWindow() {
   });
 }
 
-app.whenReady().then(() => {
-  console.log('App is ready, creating window');
+app.on('ready', () => {
+  console.log('App is ready');
   createWindow();
 });
 
@@ -74,47 +131,88 @@ ipcMain.handle('get-initial-save-directory', async () => {
   }
 });
 
-ipcMain.handle('create-session-folder', async (event, directory) => {
-  console.log('Creating session folder in:', directory);
-  const sessionFolder = path.join(directory, Date.now().toString());
+// データ保存場所を明示的に指定
+const DATA_DIR = path.join(app.getAppPath(), 'data');
+
+ipcMain.handle('create-session-folder', async (event, userType) => {
   try {
-    await fs.mkdir(sessionFolder, { recursive: true });
-    console.log('Created session folder:', sessionFolder);
-    return sessionFolder;
+    const userTypeDir = path.join(DATA_DIR, userType);
+    await fs.mkdir(userTypeDir, { recursive: true });
+
+    const sessions = await fs.readdir(userTypeDir);
+    const sessionNumbers = sessions
+      .filter(name => /^\d+$/.test(name))
+      .map(name => parseInt(name, 10));
+
+    const newSessionId = sessionNumbers.length > 0 ? Math.max(...sessionNumbers) + 1 : 1;
+    const sessionDir = path.join(userTypeDir, newSessionId.toString());
+    
+    await fs.mkdir(sessionDir);
+
+    const infoFilePath = path.join(userTypeDir, 'sessions_info.txt');
+    await fs.appendFile(infoFilePath, `SessionID: ${newSessionId}, Data Count: 0\n`);
+
+    console.log('Created new session directory:', sessionDir);
+    return { sessionId: newSessionId, directory: sessionDir, userType };
   } catch (error) {
     console.error('Error creating session folder:', error);
     throw error;
   }
 });
 
-ipcMain.handle('select-directory', async () => {
-  console.log('Opening directory selection dialog');
+// デバッグ用：アプリケーション起動時にデータディレクトリのパスをログ出力
+console.log('Data directory path:', DATA_DIR);
+
+ipcMain.handle('save-data', async (event, directory, filename, data) => {
+  const filePath = path.join(directory, filename);
+  await fs.writeFile(filePath, data);
+  return { success: true, filePath };
+});
+
+ipcMain.handle('update-session-info', async (event, userType, sessionId, dataCount) => {
   try {
-    const result = await dialog.showOpenDialog(mainWindow, {
-      properties: ['openDirectory']
-    });
-    if (result.canceled) {
-      console.log('Directory selection canceled');
-      return null;
-    } else {
-      console.log('Selected directory:', result.filePaths[0]);
-      return result.filePaths[0];
+    const userTypeDir = path.join(DATA_DIR, userType);
+    await fs.mkdir(userTypeDir, { recursive: true });
+    const infoFilePath = path.join(userTypeDir, 'sessions_info.txt');
+    
+    let content = '';
+    try {
+      content = await fs.readFile(infoFilePath, 'utf-8');
+    } catch (error) {
+      if (error.code !== 'ENOENT') {
+        throw error;
+      }
+      // ファイルが存在しない場合は、新しく作成します
     }
+
+    const lines = content.split('\n');
+    const updatedLines = lines.map(line => {
+      if (line.startsWith(`SessionID: ${sessionId},`)) {
+        return `SessionID: ${sessionId}, Data Count: ${dataCount}`;
+      }
+      return line;
+    });
+
+    if (!updatedLines.some(line => line.startsWith(`SessionID: ${sessionId},`))) {
+      updatedLines.push(`SessionID: ${sessionId}, Data Count: ${dataCount}`);
+    }
+
+    await fs.writeFile(infoFilePath, updatedLines.join('\n'));
+    console.log(`Updated session info for ${userType} session ${sessionId}`);
   } catch (error) {
-    console.error('Error in directory selection:', error);
+    console.error('Error updating session info:', error);
     throw error;
   }
 });
 
-ipcMain.handle('save-data', async (event, folder, filename, data) => {
-  console.log('Saving data to file:', path.join(folder, filename));
-  const filePath = path.join(folder, filename);
+// IPC handler to load image sets
+ipcMain.handle('load-image-sets', async (event) => {
+  const baseDir = path.join(app.getAppPath(), 'image_sets');
   try {
-    await fs.writeFile(filePath, JSON.stringify(data, null, 2));
-    console.log('Data saved successfully');
-    return { success: true, filePath };
+    const imageSets = await loadImageSets(baseDir);
+    return imageSets;
   } catch (error) {
-    console.error('Error saving data:', error);
+    console.error('Error loading image sets:', error);
     throw error;
   }
 });
