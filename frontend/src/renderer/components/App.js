@@ -64,6 +64,14 @@ function App() {
     }
   }, [gazeData]);
 
+  useEffect(() => {
+    const interval = setInterval(() => {
+      console.log(`[${new Date().toISOString()}] App is still running. Memory usage: ${process.memoryUsage().heapUsed / 1024 / 1024} MB`);
+    }, 5000);
+  
+    return () => clearInterval(interval);
+  }, []);
+
   const logUserAction = (action, details = {}) => {
     const timestamp = gazeData ? gazeData.timestamp : Date.now();
     setUserActionLog(prev => [...prev, { timestamp, action, details }]);
@@ -96,7 +104,8 @@ function App() {
     const sessionResult = await createSessionFolder();
     if (sessionResult) {
       const randomImages = getRandomImages(imageSets[selectedSet], 4);
-      stopTracking(); // カウントダウン中はトラッキングを停止
+      stopTracking();
+      console.log(`[${new Date().toISOString()}] Gaze tracking stopped before countdown`);
       setGazeDataBuffer([]);
       setUserActionLog([]);
       
@@ -119,12 +128,20 @@ function App() {
   };
 
   const handleCountdownComplete = () => {
-    console.log('Countdown completed');
-    setShowCountdown(false);
-    setShowImages(true);
-    startTracking(); // カウントダウン完了後にトラッキングを開始
-    setIsDataCollectionActive(true);
+    try {
+      console.log(`[${new Date().toISOString()}] Countdown completed`);
+      setShowCountdown(false);
+      setShowImages(true);
+      console.log(`[${new Date().toISOString()}] Starting tracking after countdown`);
+      startTracking();
+      setIsDataCollectionActive(true);
+      console.log(`[${new Date().toISOString()}] Data collection active set to true`);
+    } catch (error) {
+      console.error(`[${new Date().toISOString()}] Error in handleCountdownComplete:`, error);
+      alert(`An error occurred: ${error.message}`);
+    }
   };
+
 
   const handleImageSelect = (image) => {
     setSelectedImage(prevSelected => prevSelected && prevSelected.id === image?.id ? null : image);
@@ -143,10 +160,19 @@ function App() {
   };
 
   const saveData = async (isEndSession = false) => {
+    console.log(`[${new Date().toISOString()}] Saving data`);
+    const gazeDataBufferContent = getGazeDataBuffer();
+    console.log(`Retrieved ${gazeDataBufferContent.length} gaze data points`);
+    
+    if (gazeDataBufferContent.length === 0) {
+      console.warn('No gaze data to save. Buffer is empty.');
+      return false;
+    }
+  
     const positions = {
       0: 1, 1: 2, 2: 3, 3: 4
     };
-
+  
     const convertRegionFormat = (region) => {
       if (!region) return null;
       return {
@@ -154,7 +180,7 @@ function App() {
         bottomRight: { x: region.x + region.width, y: region.y + region.height }
       };
     };
-
+  
     const jsonData = {
       step: currentStep,
       subStep: currentSubStep,
@@ -174,25 +200,34 @@ function App() {
       userActionLog: userActionLog,
       isEndSession: isEndSession
     };
-
-    const gazeDataBufferContent = getGazeDataBuffer();
-    const csvData = gazeDataBufferContent.map(data => 
-      `${data.timestamp},${isNaN(data.left_x) ? 'N' : data.left_x},${isNaN(data.left_y) ? 'N' : data.left_y},${isNaN(data.right_x) ? 'N' : data.right_x},${isNaN(data.right_y) ? 'N' : data.right_y}`
-    ).join('\n');
   
-    const csvHeader = 'timestamp,left_x,left_y,right_x,right_y\n';
+    const csvData = gazeDataBufferContent.map(data => {
+      const line = `${data.timestamp},${isNaN(data.left_x) ? 'N' : data.left_x},${isNaN(data.left_y) ? 'N' : data.left_y},${isNaN(data.right_x) ? 'N' : data.right_x},${isNaN(data.right_y) ? 'N' : data.right_y}`;
+      console.log(`CSV line: ${line}`);
+      return line;
+    }).join('\n');
+  
+    console.log(`CSV data length: ${csvData.length} characters`);
   
     try {
       const jsonFileName = `${currentStep}_${currentSubStep}.json`;
-      const csvFileName = `${currentStep}_${currentSubStep}.csv`;
+      console.log(`Saving JSON file: ${jsonFileName}`);
+      await ipcRenderer.invoke('save-data', saveDirectory, jsonFileName, JSON.stringify(jsonData, null, 2));
   
-      await ipcRenderer.invoke('save-data', saveDirectory, jsonFileName, JSON.stringify({
-        ...jsonData,
-        gazeData: gazeDataBuffer
-      }, (key, value) => 
-        typeof value === 'number' && isNaN(value) ? 'N' : value
-      , 2));
-      await ipcRenderer.invoke('save-data', saveDirectory, csvFileName, csvHeader + csvData);
+      if (gazeDataBufferContent.length > 0) {
+        const csvFileName = `${currentStep}_${currentSubStep}.csv`;
+        const csvHeader = 'timestamp,left_x,left_y,right_x,right_y\n';
+        const csvData = gazeDataBufferContent.map(data => 
+          `${data.timestamp},${isNaN(data.left_x) ? 'N' : data.left_x},${isNaN(data.left_y) ? 'N' : data.left_y},${isNaN(data.right_x) ? 'N' : data.right_x},${isNaN(data.right_y) ? 'N' : data.right_y}`
+        ).join('\n');
+  
+        console.log(`Saving CSV file: ${csvFileName}`);
+        await ipcRenderer.invoke('save-data', saveDirectory, csvFileName, csvHeader + csvData);
+      } else {
+        console.log('No gaze data to save in CSV format');
+      }
+  
+      console.log(`Updating session info: sessionId=${sessionId}, currentStep=${currentStep}`);
       await ipcRenderer.invoke('update-session-info', userType, sessionId, currentStep);
   
       console.log('Data saved successfully');
@@ -205,8 +240,11 @@ function App() {
   };
 
   const handleNextStep = async () => {
+    console.log(`[${new Date().toISOString()}] Next step initiated`);
     setIsDataCollectionActive(false);
+    console.log(`[${new Date().toISOString()}] Data collection active set to false`);
     stopTracking();
+    console.log(`[${new Date().toISOString()}] Gaze tracking stopped at next step`);  
 
     if (await saveData()) {
       if (currentSubStep === 2) {
@@ -241,6 +279,7 @@ function App() {
 
       setShowCountdown(true);
       setShowImages(false);
+      console.log(`[${new Date().toISOString()}] Preparing for next countdown`);
       logUserAction('NEXT_STEP', { 
         currentStep: currentStep, 
         currentSubStep: currentSubStep === 2 ? 1 : 2,
@@ -253,6 +292,7 @@ function App() {
     try {
       await saveData(false);
       stopTracking();
+      console.log(`[${new Date().toISOString()}] Gaze tracking stopped at session end`);
       setIsInitialScreen(true);
       setCurrentSetIndex(0);
       setCurrentImages([]);

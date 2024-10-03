@@ -8,9 +8,10 @@ const useEyeTracker = (url) => {
   const gazeDataBuffer = useRef([]);
   const lastUpdateTime = useRef(0);
   const socketRef = useRef(null);
+  const isTrackingRef = useRef(false);
 
   const connectToEyeTracker = useCallback(() => {
-    console.log(`Attempting to connect to eye tracker at ${url}`);
+    console.log(`[${new Date().toISOString()}] Attempting to connect to eye tracker at ${url}`);
     
     try {
       socketRef.current = new WebSocket(url);
@@ -21,13 +22,15 @@ const useEyeTracker = (url) => {
     }
 
     socketRef.current.onopen = () => {
-      console.log('WebSocket connection opened successfully');
+      console.log(`[${new Date().toISOString()}] WebSocket connection opened successfully`);
       setIsConnected(true);
       setError(null);
     };
 
     socketRef.current.onmessage = (event) => {
-      if (!isTracking) return;
+      if (!isTrackingRef.current) {
+        return;
+      }
       
       try {
         const sanitizedData = event.data.replace(/"N"/g, '"NaN"');
@@ -39,7 +42,7 @@ const useEyeTracker = (url) => {
         });
         gazeDataBuffer.current.push(data);
 
-        // 60Hzでメインスレッドを更新 (約16.67ms)
+        // UIの更新は60Hzに制限（約16.67ms）
         if (Date.now() - lastUpdateTime.current > 16) {
           setGazeData(data);
           lastUpdateTime.current = Date.now();
@@ -50,43 +53,64 @@ const useEyeTracker = (url) => {
     };
 
     socketRef.current.onclose = (event) => {
-      console.log('WebSocket connection closed', event.reason);
+      console.log(`[${new Date().toISOString()}] WebSocket connection closed`, event.reason);
       setIsConnected(false);
       setError(`WebSocket connection closed: ${event.reason}`);
       setTimeout(connectToEyeTracker, 5000);
     };
 
     socketRef.current.onerror = (error) => {
-      console.error('WebSocket error:', error);
+      console.error(`[${new Date().toISOString()}] WebSocket error:`, error);
       setError(`WebSocket error: ${error.message || JSON.stringify(error)}`);
     };
-  }, [url, isTracking]);
+  }, [url]);
 
   const startTracking = useCallback(() => {
-    console.log('Starting eye tracking');
+    const startTime = new Date().toISOString();
+    console.log(`[${startTime}] Starting eye tracking`);
+    isTrackingRef.current = true;
     setIsTracking(true);
     gazeDataBuffer.current = [];
+    console.log(`[${new Date().toISOString()}] Eye tracking started successfully. isTracking:`, isTrackingRef.current);
   }, []);
 
   const stopTracking = useCallback(() => {
-    console.log('Stopping eye tracking');
+    const stopTime = new Date().toISOString();
+    console.log(`[${stopTime}] Stopping eye tracking`);
+    isTrackingRef.current = false;
     setIsTracking(false);
+    console.log(`Collected ${gazeDataBuffer.current.length} gaze data points. isTracking:`, isTrackingRef.current);
   }, []);
 
   const getGazeDataBuffer = useCallback(() => {
+    const bufferSize = gazeDataBuffer.current.length;
+    console.log(`[${new Date().toISOString()}] Retrieving gaze data buffer with ${bufferSize} points`);
+    if (bufferSize === 0) {
+      console.warn('Gaze data buffer is empty');
+    } else {
+      console.log('First data point:', JSON.stringify(gazeDataBuffer.current[0]));
+      console.log('Last data point:', JSON.stringify(gazeDataBuffer.current[bufferSize - 1]));
+    }
     const buffer = gazeDataBuffer.current;
     gazeDataBuffer.current = [];
     return buffer;
   }, []);
 
   useEffect(() => {
+    console.log(`[${new Date().toISOString()}] Setting up WebSocket connection`);
     connectToEyeTracker();
     return () => {
+      console.log(`[${new Date().toISOString()}] Cleaning up effect`);
       if (socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
         socketRef.current.close();
       }
+      stopTracking();
     };
-  }, [connectToEyeTracker]);
+  }, [connectToEyeTracker, stopTracking]);
+
+  useEffect(() => {
+    console.log(`[${new Date().toISOString()}] isTracking state changed:`, isTracking);
+  }, [isTracking]);
 
   return { gazeData, isConnected, error, startTracking, stopTracking, getGazeDataBuffer };
 };
