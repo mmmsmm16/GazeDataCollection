@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   Container, 
   Typography, 
@@ -8,24 +8,29 @@ import {
   InputLabel,
   Select,
   MenuItem,
-  TextField
+  TextField,
+  FormControlLabel,
+  Checkbox,
+  Paper  // Paperを追加
 } from '@mui/material';
 import ImageGallery from './ImageGallery';
 import Countdown from './Countdown';
 import useEyeTracker from '../hooks/useEyeTracker';
 const { ipcRenderer } = window.require('electron');
 
+
 function App() {
   const [isInitialScreen, setIsInitialScreen] = useState(true);
   const [imageSets, setImageSets] = useState({});
   const [selectedSet, setSelectedSet] = useState('');
-  const [userType, setUserType] = useState('host');
-  const [totalSteps, setTotalSteps] = useState('');
+  const [userType, setUserType] = useState('guest');
+  const [totalSteps, setTotalSteps] = useState(10);
   const [currentStep, setCurrentStep] = useState(1);
   const [currentSubStep, setCurrentSubStep] = useState(1);
   const [currentImages, setCurrentImages] = useState([]);
-  const [selectedImage, setSelectedImage] = useState(null);
+  const [nextImages, setNextImages] = useState([]);
   const [currentSetIndex, setCurrentSetIndex] = useState(0);
+  const [selectedImage, setSelectedImage] = useState(null);
   const [selectedRegions, setSelectedRegions] = useState({});
   const [saveDirectory, setSaveDirectory] = useState('');
   const [sessionId, setSessionId] = useState(null);
@@ -37,6 +42,10 @@ function App() {
   const [showCountdown, setShowCountdown] = useState(false);
   const [isDataCollectionActive, setIsDataCollectionActive] = useState(false);
   const [showImages, setShowImages] = useState(false);
+  const [imageQueue, setImageQueue] = useState([]);
+  const [isLoadingImages, setIsLoadingImages] = useState(true);
+  const [includeRegionSelection, setIncludeRegionSelection] = useState(false);
+
   const { 
     gazeData, 
     isConnected, 
@@ -46,17 +55,76 @@ function App() {
     getGazeDataBuffer 
   } = useEyeTracker('ws://host.docker.internal:8765');
 
+
+  // App.js の isInitialScreen に関するuseEffectを追加
+useEffect(() => {
+  console.log('isInitialScreen:', isInitialScreen);
+}, [isInitialScreen]);
+
+  // デバッグ用のログ関数
+  const debugLog = useCallback((message, data) => {
+    console.log(`[${new Date().toISOString()}] ${message}`, data);
+  }, []);
+  
+  // Image sets のロード
   useEffect(() => {
+    debugLog('Loading image sets');
     ipcRenderer.invoke('load-image-sets')
       .then(loadedImageSets => {
+        debugLog('Loaded image sets', loadedImageSets);
         setImageSets(loadedImageSets);
-        console.log('Loaded image sets:', loadedImageSets);
       })
       .catch(error => {
         console.error('Failed to load image sets:', error);
         alert(`Failed to load image sets. Error: ${error.message}\nPlease check the image_sets folder and the main process logs.`);
       });
-  }, []);
+  }, [debugLog]);
+
+  // 画像セットをロードする関数
+  const loadImageSet = useCallback((setIndex) => {
+    const setKeys = Object.keys(imageSets);
+    if (setKeys.length === 0) {
+      debugLog('No image sets available', imageSets);
+      return [];
+    }
+    const setKey = setKeys[setIndex % setKeys.length];
+    const newImages = getRandomImages(imageSets[setKey], 4);
+    debugLog(`Loaded image set for index ${setIndex}`, newImages);
+    return newImages;
+  }, [imageSets, debugLog]);
+
+  // 画像キューを更新する関数
+  const updateImageQueue = useCallback(() => {
+    setIsLoadingImages(true);
+    const newImages = loadImageSet(currentSetIndex + imageQueue.length);
+    if (newImages.length > 0) {
+      setImageQueue(prevQueue => {
+        const updatedQueue = [...prevQueue, newImages];
+        debugLog('Updated image queue', updatedQueue);
+        return updatedQueue;
+      });
+    } else {
+      debugLog('Failed to load new images for queue', { currentSetIndex, queueLength: imageQueue.length });
+    }
+    setIsLoadingImages(false);
+  }, [loadImageSet, currentSetIndex, imageQueue.length, debugLog]);
+
+  // 初期画像セットのロード
+  useEffect(() => {
+    if (Object.keys(imageSets).length > 0 && imageQueue.length === 0) {
+      debugLog('Loading initial image sets', { imageSetsLength: Object.keys(imageSets).length, queueLength: imageQueue.length });
+      updateImageQueue();
+      updateImageQueue(); // 次のセットも準備
+    }
+  }, [imageSets, imageQueue.length, updateImageQueue, debugLog]);
+
+  // 画像キューが少なくなったら新しい画像をロード
+  useEffect(() => {
+    if (imageQueue.length < 2 && !isLoadingImages) {
+      debugLog('Updating image queue due to low count', { queueLength: imageQueue.length, isLoadingImages });
+      updateImageQueue();
+    }
+  }, [imageQueue, isLoadingImages, updateImageQueue, debugLog]);
 
   useEffect(() => {
     if (gazeData) {
@@ -97,6 +165,12 @@ function App() {
   };
 
   const handleStartSession = async () => {
+    console.log('Starting session with:', {
+      selectedSet,
+      userType,
+      totalSteps,
+      includeRegionSelection
+    });
     if (!selectedSet || !userType || !totalSteps) {
       alert('Please select an image set, user type, and set the total steps before starting the session.');
       return;
@@ -127,24 +201,17 @@ function App() {
     }
   };
 
-  const handleCountdownComplete = () => {
-    try {
-      console.log(`[${new Date().toISOString()}] Countdown completed`);
-      setShowCountdown(false);
-      setShowImages(true);
-      console.log(`[${new Date().toISOString()}] Starting tracking after countdown`);
-      startTracking();
-      setIsDataCollectionActive(true);
-      console.log(`[${new Date().toISOString()}] Data collection active set to true`);
-    } catch (error) {
-      console.error(`[${new Date().toISOString()}] Error in handleCountdownComplete:`, error);
-      alert(`An error occurred: ${error.message}`);
-    }
-  };
+  const handleCountdownComplete = useCallback(() => {
+    debugLog('Countdown completed', { currentStep, currentSubStep, currentImages });
+    setShowCountdown(false);
+    setShowImages(true);
+    startTracking();
+    setIsDataCollectionActive(true);
+  }, [currentStep, currentSubStep, currentImages, debugLog, startTracking]);
 
 
   const handleImageSelect = (image) => {
-    setSelectedImage(prevSelected => prevSelected && prevSelected.id === image?.id ? null : image);
+    setSelectedImage(image);
     logUserAction('IMAGE_SELECT', { imageId: image.id });
   };
 
@@ -159,11 +226,11 @@ function App() {
     logUserAction('REGION_SELECT', { imageId: image.id, region });
   };
 
-  const saveData = async (isEndSession = false) => {
-    console.log(`[${new Date().toISOString()}] Saving data`);
+  const saveData = async (isEndSession = false, currentSelectedImage = null) => {
+    console.log(`[${new Date().toISOString()}] Saving data with selected image:`, currentSelectedImage);
     const gazeDataBufferContent = getGazeDataBuffer();
     console.log(`Retrieved ${gazeDataBufferContent.length} gaze data points`);
-    
+  
     if (gazeDataBufferContent.length === 0) {
       console.warn('No gaze data to save. Buffer is empty.');
       return false;
@@ -191,7 +258,7 @@ function App() {
         src: image.src,
         alt: image.alt,
         position: positions[index],
-        isSelected: selectedImage && selectedImage.id === image.id,
+        isSelected: currentSelectedImage ? image.id === currentSelectedImage.id : selectedImage ? image.id === selectedImage.id : false,
         regions: {
           positive: convertRegionFormat(selectedRegions[image.id]?.positive),
           negative: convertRegionFormat(selectedRegions[image.id]?.negative)
@@ -239,53 +306,132 @@ function App() {
     }
   };
 
-  const handleNextStep = async () => {
-    console.log(`[${new Date().toISOString()}] Next step initiated`);
+  // handleNextStep 関数
+  const handleNextStep = async (selectedImageFromGallery = null) => {
+    debugLog('handleNextStep called', { currentStep, currentSubStep, imageQueueLength: imageQueue.length, currentImages });
+  
     setIsDataCollectionActive(false);
-    console.log(`[${new Date().toISOString()}] Data collection active set to false`);
     stopTracking();
-    console.log(`[${new Date().toISOString()}] Gaze tracking stopped at next step`);  
+    
+    // 選択された画像の状態を即時反映させる
+    let currentSelectedImage = selectedImage;
+    if (selectedImageFromGallery) {
+      currentSelectedImage = selectedImageFromGallery;
+      setSelectedImage(selectedImageFromGallery);
+    }
+  
+    // saveDataを修正して現在の選択状態を渡す
+    await saveData(false, currentSelectedImage);
 
-    if (await saveData()) {
-      if (currentSubStep === 2) {
-        // Both sub-steps are completed, move to next main step
-        if (currentStep >= parseInt(totalSteps)) {
-          handleEndSession();
+    let nextStep = currentStep;
+    let nextSubStep = currentSubStep;
+  
+    if (includeRegionSelection) {
+      if (currentSubStep === 1) {
+        nextSubStep = 2;
+        setIsRegionSelectionStep(true);
+      } else {
+        nextStep = currentStep + 1;
+        nextSubStep = 1;
+        setIsRegionSelectionStep(false);
+      }
+    } else {
+      nextStep = currentStep + 1;
+      nextSubStep = 1;
+      setIsRegionSelectionStep(false);
+    }
+
+    debugLog('Transitioning to next step/substep', { nextStep, nextSubStep });
+
+    if (nextStep > parseInt(totalSteps)) {
+      debugLog('Reached total steps, ending session');
+      await handleEndSession();
+      resetState();
+      return;
+    }
+    
+    setCurrentStep(nextStep);
+    setCurrentSubStep(nextSubStep);
+
+    if (nextSubStep === 1) {
+      if (imageQueue.length > 0) {
+        const nextImages = imageQueue[0];
+        debugLog('Setting next images', nextImages);
+        setCurrentImages(nextImages);
+        setImageQueue(prevQueue => {
+          const updatedQueue = prevQueue.slice(1);
+          debugLog('Updated image queue after setting next images', updatedQueue);
+          return updatedQueue;
+        });
+        setCurrentSetIndex(prevIndex => prevIndex + 1);
+        
+        if (imageQueue.length < 3) {
+          debugLog('Updating image queue in handleNextStep', { queueLength: imageQueue.length });
+          updateImageQueue();
+        }
+      } else {
+        debugLog('Image queue is empty. Loading new images.', { currentSetIndex });
+        const newImages = loadImageSet(currentSetIndex);
+        if (newImages.length > 0) {
+          setCurrentImages(newImages);
+          debugLog('Loaded new images as fallback', newImages);
+        } else {
+          debugLog('Failed to load new images as fallback', { currentSetIndex, imageSets });
+          alert('Failed to load new images. Please restart the session.');
           return;
         }
-        setCurrentStep(prevStep => prevStep + 1);
-        setCurrentSubStep(1);
-        setIsRegionSelectionStep(false);
-        
-        const nextSetIndex = (currentSetIndex + 1) % Object.keys(imageSets).length;
-        setCurrentSetIndex(nextSetIndex);
-        
-        const nextSetKey = Object.keys(imageSets)[nextSetIndex];
-        const nextImages = getRandomImages(imageSets[nextSetKey], 4);
-        setCurrentImages(nextImages);
-      } else {
-        // Move to region selection step
-        setCurrentSubStep(2);
-        setIsRegionSelectionStep(true);
       }
-
-      setSelectedImage(null);
-      setSelectedRegions({});
-      setGazeDataBuffer([]);
-
-      if (imageGalleryRef.current) {
-        imageGalleryRef.current.resetSelection();
-      }
-
+      
       setShowCountdown(true);
       setShowImages(false);
-      console.log(`[${new Date().toISOString()}] Preparing for next countdown`);
-      logUserAction('NEXT_STEP', { 
-        currentStep: currentStep, 
-        currentSubStep: currentSubStep === 2 ? 1 : 2,
-        isRegionSelectionStep: currentSubStep === 1 
-      });
+      setSelectedImage(null);
+    } else {
+      startNextSubstep();
     }
+
+    setSelectedRegions({});
+    setGazeDataBuffer([]);
+
+    if (imageGalleryRef.current) {
+      imageGalleryRef.current.resetSelection();
+    }
+
+    logUserAction('NEXT_STEP', { 
+      currentStep: nextStep, 
+      currentSubStep: nextSubStep,
+      isRegionSelectionStep: nextSubStep === 2 
+    });
+  };
+  
+  const resetState = () => {
+    setCurrentStep(1);
+    setCurrentSubStep(1);
+    setIsRegionSelectionStep(false);
+    setCurrentSetIndex(0);
+    setSelectedImage(null);
+    setSelectedRegions({});
+    setGazeDataBuffer([]);
+    setUserActionLog([]);
+    setShowCountdown(false);
+    setShowImages(false);
+    setIsDataCollectionActive(false);
+    
+    // 画像キューを初期化
+    setImageQueue([]);
+    updateImageQueue();
+    updateImageQueue();
+  
+    // 初期画面に戻る
+    setIsInitialScreen(true);
+  
+    console.log(`[${new Date().toISOString()}] State reset completed. Ready for new session.`);
+  };
+
+  const startNextSubstep = () => {
+    console.log(`[${new Date().toISOString()}] Starting next substep`);
+    setShowImages(true);
+    startTracking();
+    setIsDataCollectionActive(true);
   };
 
   const handleEndSession = async () => {
@@ -320,11 +466,11 @@ function App() {
 
   if (isInitialScreen) {
     return (
-      <Container maxWidth="sm" style={{ marginTop: '20vh' }}>
-        <Typography variant="h4" component="h1" gutterBottom align="center">
-          Image Selection System
-        </Typography>
-        <Box mt={4}>
+      <Container maxWidth="sm">
+        <Box sx={{ mt: '20vh', p: 4, bgcolor: 'background.paper' }}>
+          <Typography variant="h4" component="h1" gutterBottom align="center">
+            Image Selection System
+          </Typography>
           <FormControl fullWidth margin="normal">
             <InputLabel id="image-set-select-label">Select Image Set</InputLabel>
             <Select
@@ -358,34 +504,46 @@ function App() {
             value={totalSteps}
             onChange={(e) => setTotalSteps(e.target.value)}
           />
-        </Box>
-        <Box mt={4} display="flex" justifyContent="center">
-          <Button 
-            variant="contained" 
-            color="primary" 
-            onClick={handleStartSession}
-            disabled={!selectedSet || !userType || !totalSteps}
-          >
-            Start Session
-          </Button>
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={includeRegionSelection}
+                onChange={(e) => setIncludeRegionSelection(e.target.checked)}
+              />
+            }
+            label="Include Region Selection Step"
+            sx={{ mt: 2, display: 'block' }}
+          />
+          <Box mt={4} display="flex" justifyContent="center">
+            <Button 
+              variant="contained" 
+              color="primary" 
+              onClick={handleStartSession}
+              disabled={!selectedSet || !userType || !totalSteps}
+            >
+              Start Session
+            </Button>
+          </Box>
         </Box>
       </Container>
     );
   }
   
+  // メイン画面のreturn部分
   return (
-    <Container maxWidth={false} style={{ padding: '1rem', minWidth: '1250px', height: '100vh', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+    <Container maxWidth={false} sx={{ 
+      padding: '1rem', 
+      minWidth: '1250px', 
+      height: '100vh', 
+      display: 'flex', 
+      flexDirection: 'column', 
+      justifyContent: 'center' 
+    }}>
       {showCountdown && <Countdown onComplete={handleCountdownComplete} />}
       {showImages && (
         <>
-          <Typography variant="h4" component="h1" gutterBottom align="center">
-            Image Selection System
-          </Typography>
           <Typography variant="h6" gutterBottom align="center">
             {isRegionSelectionStep ? "Select Regions" : "Select Preferred Image"}
-          </Typography>
-          <Typography variant="subtitle1" gutterBottom align="center">
-            Step: {currentStep} / {totalSteps} (Sub-step: {currentSubStep} / 2)
           </Typography>
           <Box display="flex" justifyContent="center" alignItems="center" flexGrow={1}>
             <Box width="80%" maxWidth="1200px">
@@ -399,19 +557,12 @@ function App() {
                   gazeData={isDataCollectionActive ? gazeData : null}
                   isRegionSelectionStep={isRegionSelectionStep}
                   logUserAction={logUserAction}
+                  onNextStep={handleNextStep}
+                  showNextStepButton={isRegionSelectionStep}
                 />
               ) : (
-                <Typography>No images loaded</Typography>
+                <Typography>Loading images...</Typography>
               )}
-              <Box mt={2} display="flex" justifyContent="center">
-                <Button
-                  variant="contained"
-                  color="primary"
-                  onClick={handleNextStep}
-                >
-                  Next Step
-                </Button>
-              </Box>
             </Box>
           </Box>
         </>

@@ -10,7 +10,7 @@ const ImageGallery = forwardRef(({
   isRegionSelectionStep,
   logUserAction,
   onNextStep,
-  showNextStepButton = true // 新しいプロパティを追加
+  showNextStepButton = true
 }, ref) => {
   const [selectingRegion, setSelectingRegion] = useState(null);
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
@@ -72,8 +72,11 @@ const ImageGallery = forwardRef(({
   };
 
   const handleSelectToggle = (image) => {
-    onImageSelect(selectedImage && selectedImage.id === image.id ? null : image);
-    logUserAction('IMAGE_SELECT_TOGGLE', { imageId: image.id, selected: !(selectedImage && selectedImage.id === image.id) });
+    if (!isRegionSelectionStep && !selectedImage) {
+      onImageSelect(image);
+      logUserAction('IMAGE_SELECT_TOGGLE', { imageId: image.id, selected: true });
+      onNextStep(image); // 画像選択後、すぐに次のステップに進む
+    }
   };
 
   const handleSelectionModeChange = (mode) => {
@@ -109,19 +112,19 @@ const ImageGallery = forwardRef(({
       display="flex" 
       flexDirection="column" 
       justifyContent="center"
-      height="512px"
+      height="100%"
       width="120px"
     >
-      {!isRegionSelectionStep && (
+      {!isRegionSelectionStep ? (
         <Button
           variant={selectedImage && selectedImage.id === image.id ? "contained" : "outlined"}
           onClick={() => handleSelectToggle(image)}
           style={{ width: '100%' }}
+          disabled={selectedImage !== null && selectedImage.id !== image.id}
         >
           {selectedImage && selectedImage.id === image.id ? "Selected" : "Select"}
         </Button>
-      )}
-      {isRegionSelectionStep && (
+      ) : (
         <>
           <ButtonGroup orientation="vertical" style={{ width: '100%' }}>
             <Button
@@ -151,7 +154,6 @@ const ImageGallery = forwardRef(({
       )}
     </Box>
   );
-
 
   const renderRegion = (imageId, region, type) => {
     if (!region) return null;
@@ -185,7 +187,7 @@ const ImageGallery = forwardRef(({
       }}
     >
       {index % 2 === 0 && (
-        <Box width="120px" mr="8px" height="512px">
+        <Box width="120px" mr="8px" height="100%">
           {renderButtons(image, index)}
         </Box>
       )}
@@ -271,6 +273,8 @@ const ImageGallery = forwardRef(({
         flexDirection: 'column',
         alignItems: 'center',
         gap: '16px',
+        // 常に固定の高さを確保し、ボタンのスペースを含める
+        height: (512 * 2) + 32 + 48, // 画像の高さ * 2 + gap + ボタンの高さ
       }}
     >
       <Box 
@@ -279,13 +283,24 @@ const ImageGallery = forwardRef(({
           gridTemplateColumns: 'repeat(2, 1fr)',
           gap: '32px',
           width: (512 + 120) * 2 + 32,
-          height: 512 * 2 + 32,
+          height: (512 * 2) + 32,
         }}
       >
         {images.map((image, index) => renderImageWithButtons(image, index))}
       </Box>
-      {/* NEXT STEPボタンをここから削除 */}
+      <Box height="48px" display="flex" justifyContent="center" alignItems="center">
+        {isRegionSelectionStep && showNextStepButton && (
+          <Button
+            variant="contained"
+            color="primary"
+            onClick={() => onNextStep()}
+          >
+            Next Step
+          </Button>
+        )}
+      </Box>
     </Box>
   );
 });
+
 export default ImageGallery;
