@@ -2,4 +2,4 @@
 /frontend/build/
 /frontend/image_sets/
 /frontend/data/
- /frontend/package-lock.json
+node_modules/
